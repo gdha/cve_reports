@@ -35,14 +35,14 @@ def fetch_ubuntu_cves(year, max_results=1000):
         A list of CVE dictionaries, or None on failure.
     """
     base_url = "https://ubuntu.com/security/cves.json"
-    page_size = 100
+    page_size = 20  # API limit is max 20 per request
     offset = 0
     all_cves = []
+
     headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
-        ),
-        "Accept": "application/json, */*",
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Accept": "application/json",
     }
 
     while offset < max_results:
