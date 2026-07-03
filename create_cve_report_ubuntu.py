@@ -639,6 +639,217 @@ def generate_report_html(year, cves):
 
 
 # ---------------------------------------------------------------------------
+# Full CVE list (all CVEs, separate files)
+# ---------------------------------------------------------------------------
+
+def generate_full_list_txt(year, cves):
+    """Generate a plain-text file listing every CVE with details."""
+    o = StringIO()
+
+    def out(text=""):
+        o.write(text + "\n")
+
+    out("=" * 70)
+    out(f"  Ubuntu Full CVE List - {year} ({len(cves)} CVEs)")
+    out("=" * 70)
+    out(f"  Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    out(f"  Source:    Ubuntu Security API (https://ubuntu.com/security/cves)")
+    out("=" * 70)
+
+    for cve in cves:
+        cve_id = cve.get("id", "N/A")
+        priority = (cve.get("priority") or "N/A").upper()
+        published = cve.get("published", "N/A")
+        status = (cve.get("status") or "N/A").capitalize()
+        description = cve.get("description", "No description available.").strip()
+        cve_packages = [p.get("name", "") for p in cve.get("packages", [])]
+        pkg_str = ", ".join(cve_packages[:10])
+        if len(cve_packages) > 10:
+            pkg_str += f" (+{len(cve_packages) - 10} more)"
+        affected = _get_affected_releases(cve)
+        affected_str = ", ".join(affected) if affected else "N/A"
+        if len(description) > 300:
+            description = description[:297] + "..."
+
+        out(f"\n{'─' * 70}")
+        out(f"  [{priority}] {cve_id}  (Status: {status})")
+        out(f"    Published: {published}")
+        out(f"    Packages:  {pkg_str}")
+        out(f"    Affected:  Ubuntu {affected_str}")
+        out(f"    {description}")
+
+    out(f"\n{'═' * 70}")
+    out(f"  Total: {len(cves)} CVEs")
+    out(f"{'═' * 70}")
+
+    return o.getvalue()
+
+
+def generate_full_list_md(year, cves):
+    """Generate a Markdown file listing every CVE with details."""
+    o = StringIO()
+
+    def out(text=""):
+        o.write(text + "\n")
+
+    out(f"# Ubuntu Full CVE List - {year}")
+    out()
+    out(f"**Total CVEs:** {len(cves)}  ")
+    out(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  ")
+    out(f"**Source:** [Ubuntu Security API](https://ubuntu.com/security/cves)")
+    out()
+    out("---")
+    out()
+
+    for cve in cves:
+        cve_id = cve.get("id", "N/A")
+        priority = (cve.get("priority") or "N/A").upper()
+        published = cve.get("published", "N/A")
+        status = (cve.get("status") or "N/A").capitalize()
+        description = cve.get("description", "No description available.").strip()
+        cve_packages = [p.get("name", "") for p in cve.get("packages", [])]
+        pkg_str = ", ".join(cve_packages[:10])
+        if len(cve_packages) > 10:
+            pkg_str += f" (+{len(cve_packages) - 10} more)"
+        affected = _get_affected_releases(cve)
+        affected_str = ", ".join(affected) if affected else "N/A"
+        if len(description) > 300:
+            description = description[:297] + "..."
+
+        out(f"## [{priority}] {cve_id}")
+        out()
+        out(f"- **Status:** {status}")
+        out(f"- **Published:** {published}")
+        out(f"- **Packages:** {pkg_str}")
+        out(f"- **Affected Ubuntu versions:** {affected_str}")
+        out(f"- {description}")
+        out()
+
+    return o.getvalue()
+
+
+def generate_full_list_html(year, cves):
+    """Generate an HTML file listing every CVE in a table with severity filter."""
+    esc = html_mod.escape
+    o = StringIO()
+
+    def out(text=""):
+        o.write(text + "\n")
+
+    out("<!DOCTYPE html>")
+    out("<html lang=\"en\">")
+    out("<head>")
+    out("  <meta charset=\"utf-8\">")
+    out(f"  <title>Ubuntu Full CVE List {year}</title>")
+    out("  <style>")
+    out("    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI',"
+        " Roboto, sans-serif; margin: 2em; color: #333; }")
+    out("    h1 { color: #E95420; }")
+    out("    table { border-collapse: collapse; width: 100%; margin: 1em 0; }")
+    out("    th, td { border: 1px solid #ddd; padding: 6px 8px;"
+        " text-align: left; vertical-align: top; }")
+    out("    th { background: #f5f5f5; position: sticky; top: 0; }")
+    out("    tr:nth-child(even) { background: #fafafa; }")
+    out("    .critical { color: #d32f2f; font-weight: bold; }")
+    out("    .high { color: #e65100; font-weight: bold; }")
+    out("    .medium { color: #f9a825; }")
+    out("    .low { color: #388e3c; }")
+    out("    .negligible { color: #666; }")
+    out("    td.desc { max-width: 400px; font-size: 0.9em; }")
+    out("    .footer { margin-top: 1em; color: #666; font-size: 0.9em; }")
+    out("    .filter-bar { margin: 1em 0; padding: 1em; background: #f9f9f9;"
+        " border: 1px solid #ddd; border-radius: 6px;"
+        " display: flex; align-items: center; gap: 1em; flex-wrap: wrap; }")
+    out("    .filter-bar label { font-weight: bold; }")
+    out("    .filter-bar select { padding: 6px 12px; border-radius: 4px;"
+        " border: 1px solid #ccc; font-size: 1em; }")
+    out("    .filter-bar .count { color: #666; font-size: 0.9em; }")
+    out("  </style>")
+    out("</head>")
+    out("<body>")
+    out(f"<h1>Ubuntu Full CVE List &ndash; {year} ({len(cves)} CVEs)</h1>")
+    out(f"<p><strong>Generated:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        f" | <strong>Source:</strong> "
+        f"<a href=\"https://ubuntu.com/security/cves\">Ubuntu Security API</a></p>")
+
+    # Filter bar
+    out('<div class="filter-bar">')
+    out('  <label for="severity-filter">Filter by severity:</label>')
+    out('  <select id="severity-filter" onchange="filterBySeverity()">')
+    out('    <option value="all">All</option>')
+    out('    <option value="critical">Critical</option>')
+    out('    <option value="high">High</option>')
+    out('    <option value="medium">Medium</option>')
+    out('    <option value="low">Low</option>')
+    out('    <option value="negligible">Negligible</option>')
+    out('    <option value="unknown">Unknown</option>')
+    out('  </select>')
+    out('  <span class="count" id="visible-count"></span>')
+    out('</div>')
+
+    out('<table id="cve-table">')
+    out("<tr><th>CVE ID</th><th>Severity</th><th>Status</th>"
+        "<th>Published</th><th>Packages</th>"
+        "<th>Affected Versions</th><th>Description</th></tr>")
+
+    for cve in cves:
+        cve_id = cve.get("id", "N/A")
+        priority = (cve.get("priority") or "unknown").lower()
+        priority_label = priority.upper()
+        status = (cve.get("status") or "N/A").capitalize()
+        published = cve.get("published", "N/A")
+        description = cve.get("description", "").strip()
+        cve_packages = [p.get("name", "") for p in cve.get("packages", [])]
+        pkg_str = ", ".join(cve_packages[:5])
+        if len(cve_packages) > 5:
+            pkg_str += f" (+{len(cve_packages) - 5} more)"
+        affected = _get_affected_releases(cve)
+        affected_str = ", ".join(affected) if affected else "N/A"
+        if len(description) > 200:
+            description = description[:197] + "..."
+
+        out(f'<tr data-severity="{priority}">'
+            f'<td><a href="https://ubuntu.com/security/{cve_id}">{esc(cve_id)}</a></td>'
+            f'<td class="{priority}">{priority_label}</td>'
+            f'<td>{esc(status)}</td>'
+            f'<td>{esc(published)}</td>'
+            f'<td>{esc(pkg_str)}</td>'
+            f'<td>{esc(affected_str)}</td>'
+            f'<td class="desc">{esc(description)}</td>'
+            f'</tr>')
+
+    out("</table>")
+    out(f'<p class="footer">Total: {len(cves)} CVEs | '
+        f'<a href="https://ubuntu.com/security/cves?q=CVE-{year}">View on Ubuntu.com</a></p>')
+
+    # JavaScript for filtering
+    out("<script>")
+    out("function filterBySeverity() {")
+    out("  var sel = document.getElementById('severity-filter').value;")
+    out("  var rows = document.querySelectorAll('#cve-table tr[data-severity]');")
+    out("  var visible = 0;")
+    out("  rows.forEach(function(row) {")
+    out("    if (sel === 'all' || row.getAttribute('data-severity') === sel) {")
+    out("      row.style.display = '';")
+    out("      visible++;")
+    out("    } else {")
+    out("      row.style.display = 'none';")
+    out("    }")
+    out("  });")
+    out("  document.getElementById('visible-count').textContent =")
+    out(f"    'Showing ' + visible + ' of {len(cves)} CVEs';")
+    out("}")
+    out(f"document.getElementById('visible-count').textContent ="
+        f" 'Showing {len(cves)} of {len(cves)} CVEs';")
+    out("</script>")
+
+    out("</body>")
+    out("</html>")
+
+    return o.getvalue()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -658,13 +869,27 @@ def main():
         "--max-results", type=int, default=1000,
         help="Maximum number of CVEs to fetch (default: 1000)"
     )
+    parser.add_argument(
+        "--full", action="store_true", default=False,
+        help="Generate the full CVE list (fetches ALL CVEs, ignores --max-results)"
+    )
     args = parser.parse_args()
 
     year = args.year
-    print(f"Fetching Ubuntu CVEs for {year}...")
-    print(f"(This may take a while — the API returns max 20 CVEs per request)\n")
 
-    cves = fetch_ubuntu_cves(year, max_results=args.max_results)
+    # --full overrides --max-results to unlimited
+    if args.full:
+        max_results = 999999
+    else:
+        max_results = args.max_results
+
+    print(f"Fetching Ubuntu CVEs for {year}...")
+    if args.full:
+        print("(Full mode: fetching ALL available CVEs — this may take several minutes)\n")
+    else:
+        print(f"(Fetching up to {max_results} CVEs — use --full for the complete list)\n")
+
+    cves = fetch_ubuntu_cves(year, max_results=max_results)
 
     if cves is None:
         print("Failed to fetch CVE data. Please check your internet connection.")
@@ -672,7 +897,7 @@ def main():
 
     print(f"\nRetrieved {len(cves)} CVEs for {year}.\n")
 
-    # Generate all three formats
+    # Generate summary reports (always)
     report_txt = generate_report_txt(year, cves)
     report_md = generate_report_md(year, cves)
     report_html = generate_report_html(year, cves)
@@ -689,6 +914,19 @@ def main():
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(content)
         files_written.append(filepath)
+
+    # Generate full CVE list only when --full is specified
+    if args.full:
+        full_txt = generate_full_list_txt(year, cves)
+        full_md = generate_full_list_md(year, cves)
+        full_html = generate_full_list_html(year, cves)
+
+        fullname = f"ubuntu_cve_full_list_{year}"
+        for ext, content in [(".txt", full_txt), (".md", full_md), (".html", full_html)]:
+            filepath = os.path.join(output_dir, fullname + ext)
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(content)
+            files_written.append(filepath)
 
     print("Reports saved:")
     for fp in files_written:
