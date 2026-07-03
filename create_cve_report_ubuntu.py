@@ -38,6 +38,12 @@ def fetch_ubuntu_cves(year, max_results=1000):
     page_size = 100
     offset = 0
     all_cves = []
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+        ),
+        "Accept": "application/json, */*",
+    }
 
     while offset < max_results:
         params = {
@@ -48,14 +54,14 @@ def fetch_ubuntu_cves(year, max_results=1000):
         }
 
         try:
-            response = requests.get(base_url, params=params, timeout=30)
+            response = requests.get(base_url, params=params, headers=headers, timeout=30)
             response.raise_for_status()
             data = response.json()
         except requests.exceptions.Timeout:
             print(f"  Warning: Request timed out at offset {offset}. Retrying...")
             time.sleep(2)
             try:
-                response = requests.get(base_url, params=params, timeout=60)
+                response = requests.get(base_url, params=params, headers=headers, timeout=60)
                 response.raise_for_status()
                 data = response.json()
             except requests.exceptions.RequestException as e:
