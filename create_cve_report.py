@@ -160,14 +160,43 @@ def fetch_ubuntu_cves(year, max_results=1000):
         "Accept": "application/json",
     }
 
+    def get_with_retry(params, max_retries=5):
+        """GET with exponential backoff on 429 / 503 and timeout retries."""
+        delay = 5
+        for attempt in range(max_retries):
+            try:
+                resp = requests.get(base_url, params=params, headers=headers, timeout=30)
+                if resp.status_code == 429:
+                    retry_after = int(resp.headers.get("Retry-After", delay))
+                    wait = max(retry_after, delay)
+                    print(f"\n  Rate limited (429). Waiting {wait}s before retry "
+                          f"(attempt {attempt + 1}/{max_retries})...", file=sys.stderr)
+                    time.sleep(wait)
+                    delay = min(delay * 2, 60)
+                    continue
+                if resp.status_code == 503:
+                    print(f"\n  Service unavailable (503). Waiting {delay}s before retry "
+                          f"(attempt {attempt + 1}/{max_retries})...", file=sys.stderr)
+                    time.sleep(delay)
+                    delay = min(delay * 2, 60)
+                    continue
+                resp.raise_for_status()
+                return resp.json()
+            except requests.exceptions.Timeout:
+                print(f"\n  Request timed out. Waiting {delay}s before retry "
+                      f"(attempt {attempt + 1}/{max_retries})...", file=sys.stderr)
+                time.sleep(delay)
+                delay = min(delay * 2, 60)
+            except requests.exceptions.RequestException as e:
+                print(f"\n  Request error: {e}", file=sys.stderr)
+                return None
+        print(f"\n  Failed after {max_retries} attempts.", file=sys.stderr)
+        return None
+
     # First request to discover total count
     params = {"q": f"CVE-{year}", "limit": page_size, "offset": 0, "order": "newest"}
-    try:
-        response = requests.get(base_url, params=params, headers=headers, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-    except requests.exceptions.RequestException as e:
-        print(f"  Error on initial request: {e}", file=sys.stderr)
+    data = get_with_retry(params)
+    if data is None:
         return None
 
     total_available = data.get("total_results", max_results)
@@ -187,24 +216,8 @@ def fetch_ubuntu_cves(year, max_results=1000):
 
     while offset < total_to_fetch:
         params = {"q": f"CVE-{year}", "limit": page_size, "offset": offset, "order": "newest"}
-        try:
-            response = requests.get(base_url, params=params, headers=headers, timeout=30)
-            response.raise_for_status()
-            data = response.json()
-        except requests.exceptions.Timeout:
-            time.sleep(2)
-            try:
-                response = requests.get(base_url, params=params, headers=headers, timeout=60)
-                response.raise_for_status()
-                data = response.json()
-            except requests.exceptions.RequestException as e:
-                print(f"\n  Error: Retry failed at offset {offset}: {e}", file=sys.stderr)
-                break
-        except requests.exceptions.HTTPError as e:
-            print(f"\n  Error: HTTP {response.status_code} at offset {offset}: {e}", file=sys.stderr)
-            break
-        except requests.exceptions.RequestException as e:
-            print(f"\n  Error: {e}", file=sys.stderr)
+        data = get_with_retry(params)
+        if data is None:
             break
 
         cves = data.get("cves", [])
@@ -219,7 +232,7 @@ def fetch_ubuntu_cves(year, max_results=1000):
         if len(cves) < page_size:
             break
         offset += page_size
-        time.sleep(0.5)
+        time.sleep(1)  # slightly more polite to avoid triggering rate limits
 
     progress.finish()
     return all_cves
@@ -286,7 +299,7 @@ def _rhel_normalize(cve_raw):
             seen_pkgs.add(pkg)
 
     # Description from bugzilla_description (list API doesn't have full details)
-    description = cve_raw.get("bugzilla_description", "")
+    description = cve_raw.get("bugzilla_description") or ""
 
     return {
         "id": cve_raw.get("CVE", "N/A"),
@@ -573,8 +586,155 @@ DISTRO_CONFIG = {
 
 
 # ===========================================================================
-# Report data extraction (shared by all formatters)
+# Package category filter
 # ===========================================================================
+
+# Core OS packages: kernel, base system libraries, core utilities.
+# These patterns are matched against package names (case-insensitive).
+CORE_OS_PATTERNS = [
+    # Kernel
+    "linux", "linux-", "kernel",
+    # C library and dynamic linker
+    "glibc", "libc", "musl", "ld-linux",
+    # Core system
+    "systemd", "udev", "dbus", "pam", "shadow", "login",
+    "coreutils", "util-linux", "procps", "psmisc", "sysvinit",
+    "init", "upstart", "openrc",
+    # Shell and scripting
+    "bash", "dash", "zsh", "ksh", "sh-", "busybox",
+    # Package management
+    "apt", "dpkg", "rpm", "yum", "dnf", "zypper", "pacman",
+    # Filesystems and storage
+    "e2fsprogs", "btrfs", "xfsprogs", "dosfstools", "lvm2",
+    "mdadm", "cryptsetup", "device-mapper", "parted", "fdisk",
+    # Networking core
+    "iproute2", "net-tools", "iputils", "iptables", "nftables",
+    "dhcp", "networkmanager", "wpa_supplicant", "ifupdown",
+    # Security and auth
+    "openssl", "gnutls", "nss", "libgcrypt", "libseccomp",
+    "sudo", "polkit", "selinux", "apparmor", "audit",
+    # Boot
+    "grub", "shim", "efibootmgr", "dracut", "initramfs",
+    # Core libs
+    "zlib", "libxml2", "libxslt", "pcre", "pcre2",
+    "liblzma", "xz-utils", "bzip2", "gzip",
+    # Time and locale
+    "tzdata", "glibc-", "locales",
+    # D-Bus, logging
+    "rsyslog", "syslog-ng", "journald",
+    # Compilers and core build (often patched as OS components)
+    "gcc", "binutils", "glibc",
+    # SSH / remote access
+    "openssh",
+    # RHEL specific core
+    "redhat-release", "centos-release", "rhcos",
+    # Ubuntu/Debian core meta-packages
+    "ubuntu-keyring", "debian-archive-keyring",
+]
+
+# Apps: things that are clearly user-level applications or middleware.
+APPS_PATTERNS = [
+    # Browsers
+    "chromium", "firefox", "firefox-esr", "thunderbird", "webkit",
+    # Web servers / proxies
+    "apache2", "httpd", "nginx", "lighttpd", "haproxy", "squid",
+    "varnish", "caddy",
+    # Databases
+    "mysql", "mariadb", "postgresql", "sqlite", "mongodb",
+    "redis", "memcached", "cassandra", "elasticsearch",
+    # Scripting runtimes
+    "python", "python2", "python3", "ruby", "perl", "php",
+    "nodejs", "node", "npm", "lua",
+    # JVM
+    "openjdk", "java", "jdk", "jre",
+    # Container / cloud
+    "docker", "podman", "containerd", "runc", "buildah",
+    "kubernetes", "kubectl", "helm", "openshift",
+    "ceph", "glusterfs",
+    # Mail
+    "postfix", "sendmail", "exim", "dovecot", "cyrus",
+    # File sharing
+    "samba", "nfs-utils", "nfs-kernel", "sshfs", "proftpd",
+    "vsftpd", "pure-ftpd",
+    # Monitoring / management
+    "nagios", "zabbix", "prometheus", "grafana",
+    # Middleware / app servers
+    "tomcat", "jboss", "wildfly", "keycloak", "quarkus",
+    # Development tools
+    "git", "subversion", "mercurial", "cmake", "make",
+    "rust", "cargo", "golang", "dotnet",
+    # Media / graphics
+    "ffmpeg", "imagemagick", "ghostscript", "poppler",
+    "libvpx", "libaom", "libwebp", "libjpeg", "libpng",
+    "tiff", "gimp", "inkscape", "libskia", "skia",
+    "libgd", "gpac", "vlc", "gstreamer",
+    # Office / document
+    "libreoffice", "openoffice",
+    # Virtualisation
+    "qemu", "kvm", "libvirt", "virtualbox", "xen",
+    # Network services (non-core)
+    "bind", "named", "dnsmasq", "unbound",
+    "ntp", "chrony",
+    "openvpn", "wireguard",
+    "cups", "cups-filters",
+    # Desktop / X
+    "xorg", "xserver", "wayland", "gnome", "kde",
+    "gtk", "qt",
+    # Network analysis / security tools
+    "wireshark", "nmap", "tcpdump", "netcat",
+    "snort", "suricata", "metasploit",
+    # Remote desktop / protocol libs
+    "freerdp", "rdesktop", "tigervnc", "libvncserver",
+    # Misc apps commonly found in distro trackers
+    "lxd", "lxc", "logback", "log4j", "slf4j",
+    "libslirp", "ettercap", "squirrel",
+    "wolfssl", "open62541",
+    "rclone", "guzzle", "gdal",
+    "qpid", "haskell-",
+    "389-ds", "389-ds-base",
+    "mongo-c-driver",
+]
+
+
+def _classify_package(pkg_name):
+    """Return 'core' or 'apps' for a given package name."""
+    name = pkg_name.lower()
+    # Check core first (kernel family is very large)
+    for pat in CORE_OS_PATTERNS:
+        if name == pat or name.startswith(pat):
+            return "core"
+    for pat in APPS_PATTERNS:
+        if name == pat or name.startswith(pat) or pat in name:
+            return "apps"
+    # Default: treat unrecognised packages as core OS
+    return "core"
+
+
+def _filter_cves(cves, category):
+    """Filter CVE list by package category ('core', 'apps', or 'all')."""
+    if category == "all":
+        return cves
+    filtered = []
+    for cve in cves:
+        packages = cve.get("packages", [])
+        if not packages:
+            if category == "core":
+                filtered.append(cve)
+            continue
+        # Include the CVE if any package matches the requested category
+        if any(_classify_package(p["name"]) == category for p in packages):
+            filtered.append(cve)
+    return filtered
+
+
+def _filter_cves_by_severity(cves, severities):
+    """Filter CVE list to only include CVEs matching any of the given severity levels."""
+    if not severities or severities == {"all"}:
+        return cves
+    return [cve for cve in cves if cve.get("priority", "unknown") in severities]
+
+
+
 
 def _extract_report_data(cves):
     """Extract structured data from normalized CVE list for report generation."""
@@ -690,8 +850,7 @@ def generate_report_txt(year, cves, distro_cfg):
     out(f"  CRITICAL & HIGH SEVERITY CVEs ({len(critical_high)} total)")
     out(f"{'─' * 70}")
 
-    display_limit = 30
-    for cve in critical_high[:display_limit]:
+    for cve in critical_high:
         cve_id = cve["id"]
         priority = cve["priority"].upper()
         published = cve["published"]
@@ -709,9 +868,6 @@ def generate_report_txt(year, cves, distro_cfg):
         out(f"    Packages:   {pkg_str}")
         out(f"    Affected:   {affected_str}")
         out(f"    {description}")
-
-    if len(critical_high) > display_limit:
-        out(f"\n  ... and {len(critical_high) - display_limit} more critical/high CVEs")
 
     # Executive summary
     out(f"\n{'═' * 70}")
@@ -741,6 +897,7 @@ def generate_report_md(year, cves, distro_cfg):
     """Generate Markdown CVE summary report."""
     distro_name = distro_cfg["name"]
     source_url = distro_cfg["source_url"]
+    cve_url_tpl = distro_cfg["cve_url_template"]
     version_label = distro_cfg["version_label"]
 
     if not cves:
@@ -801,8 +958,7 @@ def generate_report_md(year, cves, distro_cfg):
     out(f"## Critical & High Severity CVEs ({len(critical_high)} total)")
     out()
 
-    display_limit = 30
-    for cve in critical_high[:display_limit]:
+    for cve in critical_high:
         cve_id = cve["id"]
         priority = cve["priority"].upper()
         published = cve["published"]
@@ -815,17 +971,14 @@ def generate_report_md(year, cves, distro_cfg):
             description = description[:197] + "..."
         affected = cve.get("affected_versions", [])
         affected_str = ", ".join(affected) if affected else "N/A"
+        cve_url = cve_url_tpl.format(cve_id=cve_id)
 
-        out(f"### [{priority}] {cve_id}")
+        out(f"### [{priority}] [{cve_id}]({cve_url})")
         out()
         out(f"- **Published:** {published}")
         out(f"- **Packages:** {pkg_str}")
         out(f"- **Affected {version_label}:** {affected_str}")
         out(f"- {description}")
-        out()
-
-    if len(critical_high) > display_limit:
-        out(f"*... and {len(critical_high) - display_limit} more critical/high CVEs*")
         out()
 
     # Executive summary
@@ -949,8 +1102,7 @@ def generate_report_html(year, cves, distro_cfg):
     # Critical/High CVEs
     out(f"<h2>Critical &amp; High Severity CVEs ({len(critical_high)} total)</h2>")
 
-    display_limit = 30
-    for cve in critical_high[:display_limit]:
+    for cve in critical_high:
         cve_id = cve["id"]
         priority = cve["priority"]
         published = cve["published"]
@@ -973,9 +1125,6 @@ def generate_report_html(year, cves, distro_cfg):
         out(f"  <strong>Affected {esc(version_label)}:</strong> {esc(affected_str)}<br>")
         out(f"  <em>{esc(description)}</em>")
         out(f"</div>")
-
-    if len(critical_high) > display_limit:
-        out(f"<p><em>... and {len(critical_high) - display_limit} more</em></p>")
 
     # Executive summary
     out('<h2>Executive Summary</h2>')
@@ -1053,6 +1202,7 @@ def generate_full_list_md(year, cves, distro_cfg):
     """Generate Markdown full CVE list."""
     distro_name = distro_cfg["name"]
     source_url = distro_cfg["source_url"]
+    cve_url_tpl = distro_cfg["cve_url_template"]
     version_label = distro_cfg["version_label"]
 
     o = StringIO()
@@ -1083,8 +1233,9 @@ def generate_full_list_md(year, cves, distro_cfg):
         affected_str = ", ".join(affected) if affected else "N/A"
         if len(description) > 300:
             description = description[:297] + "..."
+        cve_url = cve_url_tpl.format(cve_id=cve_id)
 
-        out(f"## [{priority}] {cve_id}")
+        out(f"## [{priority}] [{cve_id}]({cve_url})")
         out()
         out(f"- **Status:** {status}")
         out(f"- **Published:** {published}")
@@ -1251,6 +1402,17 @@ def main():
         "--full", action="store_true", default=False,
         help="Generate the full CVE list (fetches ALL CVEs, ignores --max-results)"
     )
+    parser.add_argument(
+        "--filter", "-f", type=str, default="all",
+        choices=["all", "core", "apps"],
+        help="Filter CVEs by package category: all (default), core (OS kernel/libs/utilities), apps (user-space applications)"
+    )
+    parser.add_argument(
+        "--severity", "-s", type=str, default="all",
+        help="Filter CVEs by severity, comma-separated: all (default), or any combination of "
+             "critical, high, medium, low, negligible, unknown "
+             "(e.g. --severity critical,high)"
+    )
     args = parser.parse_args()
 
     distro = args.distro
@@ -1276,7 +1438,28 @@ def main():
         print("Failed to fetch CVE data. Please check your internet connection.")
         sys.exit(1)
 
-    print(f"\nRetrieved {len(cves)} CVEs for {year}.\n")
+    print(f"\nRetrieved {len(cves)} CVEs for {year}.")
+
+    # Apply package category filter
+    category = args.filter
+    if category != "all":
+        cves = _filter_cves(cves, category)
+        print(f"After '{category}' filter: {len(cves)} CVEs.")
+
+    # Apply severity filter
+    severity_arg = args.severity.strip().lower()
+    valid_severities = {"critical", "high", "medium", "low", "negligible", "unknown"}
+    if severity_arg != "all":
+        requested = {s.strip() for s in severity_arg.split(",")}
+        invalid = requested - valid_severities
+        if invalid:
+            print(f"Error: unknown severity value(s): {', '.join(sorted(invalid))}. "
+                  f"Valid: {', '.join(sorted(valid_severities))}", file=sys.stderr)
+            sys.exit(1)
+        cves = _filter_cves_by_severity(cves, requested)
+        print(f"After severity filter ({severity_arg}): {len(cves)} CVEs.")
+
+    print()
 
     # Generate summary reports (always)
     report_txt = generate_report_txt(year, cves, distro_cfg)
@@ -1287,7 +1470,9 @@ def main():
     output_dir = args.output_dir
     os.makedirs(output_dir, exist_ok=True)
 
-    basename = f"{distro}_cve_report_{year}"
+    category_suffix = f"_{category}" if category != "all" else ""
+    severity_suffix = f"_{severity_arg.replace(',', '_')}" if severity_arg != "all" else ""
+    basename = f"{distro}_cve_report_{year}{category_suffix}{severity_suffix}"
     files_written = []
 
     for ext, content in [(".txt", report_txt), (".md", report_md), (".html", report_html)]:
@@ -1302,7 +1487,7 @@ def main():
         full_md = generate_full_list_md(year, cves, distro_cfg)
         full_html = generate_full_list_html(year, cves, distro_cfg)
 
-        fullname = f"{distro}_cve_full_list_{year}"
+        fullname = f"{distro}_cve_full_list_{year}{category_suffix}{severity_suffix}"
         for ext, content in [(".txt", full_txt), (".md", full_md), (".html", full_html)]:
             filepath = os.path.join(output_dir, fullname + ext)
             with open(filepath, "w", encoding="utf-8") as f:
