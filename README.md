@@ -28,19 +28,22 @@ Command-line tools to generate CVE summary reports for Linux distributions. Fetc
 
 ```bash
 # RHEL report for current year
-./create_cve_report.py -d rhel
+python create_cve_report.py -d rhel
 
 # Ubuntu full report for 2025
-./create_cve_report.py -d ubuntu --year 2025 --full
+python create_cve_report.py -d ubuntu --year 2025 --full
 
 # Debian, limited to 100 CVEs, output to a specific directory
-./create_cve_report.py -d debian --max-results 100 -o /tmp/reports
+python create_cve_report.py -d debian --max-results 100 -o /tmp/reports
 
 # Only critical and high CVEs for Ubuntu
-./create_cve_report.py -d ubuntu --severity critical,high
+python create_cve_report.py -d ubuntu --severity critical,high
 
 # Only core OS packages for RHEL
-./create_cve_report.py -d rhel --filter core
+python create_cve_report.py -d rhel --filter core
+
+# Add a one-line-per-CVE detail table to the summary report
+python create_cve_report.py -d ubuntu --detail
 ```
 
 ### Options
@@ -54,12 +57,13 @@ Command-line tools to generate CVE summary reports for Linux distributions. Fetc
 --filter, -f        Package category filter: all (default), core, apps
 --severity, -s      Severity filter, comma-separated (default: all)
                     Values: critical, high, medium, low, negligible, unknown
+--detail            Add a one-line-per-CVE description table to the summary report
 ```
 
 ### Example
 
 ```
-$ ./create_cve_report.py -d rhel --max-results 50
+$ python create_cve_report.py -d rhel --max-results 50
 
 Fetching Red Hat Enterprise Linux CVEs for 2026...
 (Fetching up to 50 CVEs — use --full for the complete list)
@@ -81,6 +85,13 @@ rhel_cve_full_list_2026.html
 ```
 
 The HTML full list includes a severity filter dropdown for interactive browsing.
+
+When `--filter` or `--severity` is used, the selected values are appended to the
+output filenames. For example:
+
+```text
+ubuntu_cve_report_2026_core_critical_high.md
+```
 
 ### Notes
 
