@@ -782,7 +782,7 @@ def _extract_report_data(cves):
 # Plain-text report
 # ===========================================================================
 
-def generate_report_txt(year, cves, distro_cfg):
+def generate_report_txt(year, cves, distro_cfg, detail=False):
     """Generate plain-text CVE summary report."""
     distro_name = distro_cfg["name"]
     source_url = distro_cfg["source_url"]
@@ -886,6 +886,27 @@ def generate_report_txt(year, cves, distro_cfg):
         f" ({sorted_packages[0][1] if sorted_packages else 0} CVEs)")
     out(f"{'═' * 70}")
 
+    # Detail: one line per CVE
+    if detail:
+        out(f"\n{'─' * 70}")
+        out(f"  ALL CVEs ({total} total)")
+        out(f"{'─' * 70}")
+        out(f"  {'CVE ID':<22} {'SEV':<12} {'Packages':<30} {'Description'}")
+        out(f"  {'-' * 100}")
+        for cve in cves:
+            cve_id = cve["id"]
+            sev = cve["priority"].upper()
+            pkg_names = [p["name"] for p in cve["packages"][:3]]
+            pkg_str = ", ".join(pkg_names)
+            if len(cve["packages"]) > 3:
+                pkg_str += f" +{len(cve['packages']) - 3}"
+            desc = cve["description"].replace("\n", " ").strip()
+            if ". " in desc:
+                desc = desc.split(". ")[0] + "."
+            if len(desc) > 80:
+                desc = desc[:77] + "..."
+            out(f"  {cve_id:<22} {sev:<12} {pkg_str:<30} {desc}")
+
     return o.getvalue()
 
 
@@ -893,7 +914,7 @@ def generate_report_txt(year, cves, distro_cfg):
 # Markdown report
 # ===========================================================================
 
-def generate_report_md(year, cves, distro_cfg):
+def generate_report_md(year, cves, distro_cfg, detail=False):
     """Generate Markdown CVE summary report."""
     distro_name = distro_cfg["name"]
     source_url = distro_cfg["source_url"]
@@ -999,6 +1020,30 @@ def generate_report_md(year, cves, distro_cfg):
         f" ({sorted_packages[0][1] if sorted_packages else 0} CVEs) |")
     out()
 
+    # Detail: one line per CVE
+    if detail:
+        out(f"## All CVEs ({total} total)")
+        out()
+        out("| CVE ID | Severity | Packages | Description |")
+        out("|--------|----------|----------|-------------|")
+        for cve in cves:
+            cve_id = cve["id"]
+            sev = cve["priority"].capitalize()
+            cve_url = cve_url_tpl.format(cve_id=cve_id)
+            pkg_names = [p["name"] for p in cve["packages"][:3]]
+            pkg_str = ", ".join(pkg_names)
+            if len(cve["packages"]) > 3:
+                pkg_str += f" +{len(cve['packages']) - 3}"
+            desc = cve["description"].replace("\n", " ").strip()
+            if ". " in desc:
+                desc = desc.split(". ")[0] + "."
+            if len(desc) > 120:
+                desc = desc[:117] + "..."
+            desc = desc.replace("|", "&#124;")
+            pkg_str = pkg_str.replace("|", "&#124;")
+            out(f"| [{cve_id}]({cve_url}) | {sev} | {pkg_str} | {desc} |")
+        out()
+
     return o.getvalue()
 
 
@@ -1006,7 +1051,7 @@ def generate_report_md(year, cves, distro_cfg):
 # HTML report
 # ===========================================================================
 
-def generate_report_html(year, cves, distro_cfg):
+def generate_report_html(year, cves, distro_cfg, detail=False):
     """Generate HTML CVE summary report."""
     distro_name = distro_cfg["name"]
     source_url = distro_cfg["source_url"]
@@ -1055,6 +1100,13 @@ def generate_report_html(year, cves, distro_cfg):
     out("    .cve-card { border: 1px solid #eee; padding: 1em;"
         " margin: 0.5em 0; border-radius: 4px; }")
     out("    .footer { margin-top: 2em; color: #666; font-size: 0.9em; }")
+    out("    .filter-bar { margin: 1em 0; padding: 1em; background: #f9f9f9;"
+        " border: 1px solid #ddd; border-radius: 6px;"
+        " display: flex; align-items: center; gap: 1em; flex-wrap: wrap; }")
+    out("    .filter-bar label { font-weight: bold; }")
+    out("    .filter-bar select { padding: 6px 12px; border-radius: 4px;"
+        " border: 1px solid #ccc; font-size: 1em; }")
+    out("    .filter-bar .count { color: #666; font-size: 0.9em; }")
     out("  </style>")
     out("</head>")
     out("<body>")
@@ -1142,6 +1194,57 @@ def generate_report_html(year, cves, distro_cfg):
         f" ({sorted_packages[0][1] if sorted_packages else 0} CVEs)</p>")
     out("</div>")
     out(f'<p class="footer"><a href="{esc(source_url)}">{esc(source_url)}</a></p>')
+
+    # Detail: one line per CVE in a compact table with severity filter
+    if detail:
+        out(f"<h2>All CVEs ({total} total)</h2>")
+        out('<div class="filter-bar">')
+        out('  <label for="detail-severity-filter">Filter by severity:</label>')
+        out('  <select id="detail-severity-filter" onchange="filterDetailTable()">')
+        out('    <option value="all">All</option>')
+        for sev in ["critical", "high", "medium", "low", "negligible", "unknown"]:
+            out(f'    <option value="{sev}">{sev.capitalize()}</option>')
+        out('  </select>')
+        out('  <span class="count" id="detail-count"></span>')
+        out('</div>')
+        out('<table id="detail-table">')
+        out("<tr><th>CVE ID</th><th>Severity</th><th>Packages</th><th>Description</th></tr>")
+        for cve in cves:
+            cve_id = cve["id"]
+            priority = cve["priority"]
+            cve_url = cve_url_tpl.format(cve_id=cve_id)
+            pkg_names = [p["name"] for p in cve["packages"][:3]]
+            pkg_str = ", ".join(pkg_names)
+            if len(cve["packages"]) > 3:
+                pkg_str += f" +{len(cve['packages']) - 3}"
+            desc = cve["description"].replace("\n", " ").strip()
+            if ". " in desc:
+                desc = desc.split(". ")[0] + "."
+            if len(desc) > 150:
+                desc = desc[:147] + "..."
+            out(f'<tr data-severity="{priority}">'
+                f'<td><a href="{esc(cve_url)}">{esc(cve_id)}</a></td>'
+                f'<td class="{priority}">{priority.upper()}</td>'
+                f'<td>{esc(pkg_str)}</td>'
+                f'<td>{esc(desc)}</td>'
+                f'</tr>')
+        out("</table>")
+        out("<script>")
+        out("function filterDetailTable() {")
+        out("  var sel = document.getElementById('detail-severity-filter').value;")
+        out("  var rows = document.querySelectorAll('#detail-table tr[data-severity]');")
+        out("  var visible = 0;")
+        out("  rows.forEach(function(row) {")
+        out("    if (sel === 'all' || row.getAttribute('data-severity') === sel) {")
+        out("      row.style.display = ''; visible++;")
+        out("    } else { row.style.display = 'none'; }")
+        out("  });")
+        out("  document.getElementById('detail-count').textContent =")
+        out(f"    'Showing ' + visible + ' of {total} CVEs';")
+        out("}")
+        out(f"document.getElementById('detail-count').textContent = 'Showing {total} of {total} CVEs';")
+        out("</script>")
+
     out("</body></html>")
 
     return o.getvalue()
@@ -1413,6 +1516,10 @@ def main():
              "critical, high, medium, low, negligible, unknown "
              "(e.g. --severity critical,high)"
     )
+    parser.add_argument(
+        "--detail", action="store_true", default=False,
+        help="Add a one-line-per-CVE description table to the summary report"
+    )
     args = parser.parse_args()
 
     distro = args.distro
@@ -1462,9 +1569,9 @@ def main():
     print()
 
     # Generate summary reports (always)
-    report_txt = generate_report_txt(year, cves, distro_cfg)
-    report_md = generate_report_md(year, cves, distro_cfg)
-    report_html = generate_report_html(year, cves, distro_cfg)
+    report_txt = generate_report_txt(year, cves, distro_cfg, detail=args.detail)
+    report_md = generate_report_md(year, cves, distro_cfg, detail=args.detail)
+    report_html = generate_report_html(year, cves, distro_cfg, detail=args.detail)
 
     # Ensure output directory exists
     output_dir = args.output_dir
