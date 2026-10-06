@@ -17,6 +17,7 @@ Usage:
 """
 
 import argparse
+import csv
 import html as html_mod
 import os
 import sys
@@ -1251,6 +1252,40 @@ def generate_report_html(year, cves, distro_cfg, detail=False):
 
 
 # ===========================================================================
+# CSV report
+# ===========================================================================
+
+def _cve_to_row(cve):
+    """Flatten a normalized CVE into a list of CSV field values."""
+    pkg_names = "; ".join(p["name"] for p in cve.get("packages", []))
+    affected = "; ".join(cve.get("affected_versions", []))
+    description = cve.get("description", "").replace("\n", " ").strip()
+    return [
+        cve.get("id", "N/A"),
+        cve.get("priority", "unknown"),
+        cve.get("status", "unknown"),
+        cve.get("published", "N/A"),
+        pkg_names,
+        affected,
+        description,
+    ]
+
+
+CSV_HEADER = ["CVE ID", "Severity", "Status", "Published",
+              "Packages", "Affected Versions", "Description"]
+
+
+def generate_report_csv(year, cves, distro_cfg):
+    """Generate a CSV report: one row per CVE (all CVEs)."""
+    o = StringIO()
+    writer = csv.writer(o)
+    writer.writerow(CSV_HEADER)
+    for cve in cves:
+        writer.writerow(_cve_to_row(cve))
+    return o.getvalue()
+
+
+# ===========================================================================
 # Full CVE list (all CVEs, separate files)
 # ===========================================================================
 
@@ -1475,6 +1510,16 @@ def generate_full_list_html(year, cves, distro_cfg):
     return o.getvalue()
 
 
+def generate_full_list_csv(year, cves, distro_cfg):
+    """Generate CSV full CVE list: one row per CVE."""
+    o = StringIO()
+    writer = csv.writer(o)
+    writer.writerow(CSV_HEADER)
+    for cve in cves:
+        writer.writerow(_cve_to_row(cve))
+    return o.getvalue()
+
+
 # ===========================================================================
 # Main
 # ===========================================================================
@@ -1572,6 +1617,7 @@ def main():
     report_txt = generate_report_txt(year, cves, distro_cfg, detail=args.detail)
     report_md = generate_report_md(year, cves, distro_cfg, detail=args.detail)
     report_html = generate_report_html(year, cves, distro_cfg, detail=args.detail)
+    report_csv = generate_report_csv(year, cves, distro_cfg)
 
     # Ensure output directory exists
     output_dir = args.output_dir
@@ -1582,9 +1628,10 @@ def main():
     basename = f"{distro}_cve_report_{year}{category_suffix}{severity_suffix}"
     files_written = []
 
-    for ext, content in [(".txt", report_txt), (".md", report_md), (".html", report_html)]:
+    for ext, content in [(".txt", report_txt), (".md", report_md),
+                         (".html", report_html), (".csv", report_csv)]:
         filepath = os.path.join(output_dir, basename + ext)
-        with open(filepath, "w", encoding="utf-8") as f:
+        with open(filepath, "w", encoding="utf-8", newline="") as f:
             f.write(content)
         files_written.append(filepath)
 
@@ -1593,11 +1640,13 @@ def main():
         full_txt = generate_full_list_txt(year, cves, distro_cfg)
         full_md = generate_full_list_md(year, cves, distro_cfg)
         full_html = generate_full_list_html(year, cves, distro_cfg)
+        full_csv = generate_full_list_csv(year, cves, distro_cfg)
 
         fullname = f"{distro}_cve_full_list_{year}{category_suffix}{severity_suffix}"
-        for ext, content in [(".txt", full_txt), (".md", full_md), (".html", full_html)]:
+        for ext, content in [(".txt", full_txt), (".md", full_md),
+                             (".html", full_html), (".csv", full_csv)]:
             filepath = os.path.join(output_dir, fullname + ext)
-            with open(filepath, "w", encoding="utf-8") as f:
+            with open(filepath, "w", encoding="utf-8", newline="") as f:
                 f.write(content)
             files_written.append(filepath)
 

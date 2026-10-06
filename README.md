@@ -1,6 +1,6 @@
 # CVE Reports
 
-Command-line tools to generate CVE summary reports for Linux distributions. Fetches data from official security APIs and outputs reports in plain text, Markdown, and HTML.
+Command-line tools to generate CVE summary reports for Linux distributions. Fetches data from official security APIs and outputs reports in plain text, Markdown, HTML, and CSV.
 
 ## Scripts
 
@@ -74,6 +74,7 @@ Reports saved:
   - ./rhel_cve_report_2026.txt
   - ./rhel_cve_report_2026.md
   - ./rhel_cve_report_2026.html
+  - ./rhel_cve_report_2026.csv
 ```
 
 With `--full`, additional files are generated:
@@ -82,6 +83,7 @@ With `--full`, additional files are generated:
 rhel_cve_full_list_2026.txt
 rhel_cve_full_list_2026.md
 rhel_cve_full_list_2026.html
+rhel_cve_full_list_2026.csv
 ```
 
 The HTML full list includes a severity filter dropdown for interactive browsing.
